@@ -1,0 +1,12 @@
+fastapi
+pydantic
+uvicorn
+python-multipart
+chromadb
+PyMuPDF
+langchain
+langchain-openai
+python-docx
+langchain_chroma
+langchain-community
+rank_bm25
