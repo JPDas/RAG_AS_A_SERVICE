@@ -15,6 +15,8 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_openai import OpenAIEmbeddings
 from langchain.schema import Document
+from langchain.load import dumps, loads
+
 
 from src.ingestion import Ingestion
 import pickle
@@ -312,9 +314,73 @@ async def hybrid_search(
 async def rag_fusion(
     space_id: str,
     vector_store_name: str,
-    query: list = Form(...),
-    top_k: int = Form(3)
+    queries: list = Form(...),
+    top_k: int = Form(3),
+    meta_filter: Optional[str] = Form(None)
 ):
     dir_path = os.path.join("spaces", space_id, vector_store_name)
     if not os.path.exists(dir_path):
         return {"error": "Vector store not found"}
+
+    queries = queries[0]
+    queries = [q.strip() for q in queries.split(",") if q.strip()]
+    if len(queries) < 4:
+        return {"status": "failure", "error": "Minimum query count is 4"}
+    # Continue with RAG fusion logic here...
+
+    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+    vector_store = Chroma(
+        collection_name=vector_store_name,
+        embedding_function=embeddings,
+        persist_directory=dir_path,
+    )
+
+    where = None
+    if meta_filter not in (None, "", "null"):
+        where = meta_filter
+    # Create retriever for similarity search
+    similarity_search_retriever = vector_store.as_retriever(
+        search_type="similarity",
+        search_kwargs={
+        'k': top_k,
+        'include': ['distances', 'metadatas', 'documents'],
+        'filter': {"category": where}
+        }
+    )
+
+    results = []    
+    for query in queries:        
+        # Get relevant documents and their scores
+        res = similarity_search_retriever.invoke(query)
+
+        results.append({
+            "query": query,
+            "results": res
+        })
+
+    return {
+        "status": "success",
+        "fused_results": reciprocal_rank_fusion([r["results"] for r in results])
+    }    
+
+
+def reciprocal_rank_fusion(results: list[list], k=60):
+    fused_scores = {}
+    for docs in results:
+        # Assumes the docs are returned in sorted order of relevance
+        for rank, doc in enumerate(docs):
+            doc_str = dumps(doc)
+            if doc_str not in fused_scores:
+                fused_scores[doc_str] = 0
+            previous_score = fused_scores[doc_str]
+            fused_scores[doc_str] += 1 / (rank + k)
+
+    reranked_results = [
+        (loads(doc), score)
+        for doc, score in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+    ]
+    return reranked_results
+
+
+               
+        
